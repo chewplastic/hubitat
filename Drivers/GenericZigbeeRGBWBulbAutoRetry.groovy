@@ -68,7 +68,7 @@ metadata {
     }
 
     preferences {
-        input name: "gracePeriod", type: "number", description: "How many milliseconds to wait after expected events before retrying them?", title: "Grace Period", defaultValue: 45000, required: true
+        input name: "gracePeriod", type: "number", description: "How many milliseconds to wait after expected events before retrying them?", title: "Grace Period", defaultValue: 5000, required: true
         input name: "transitionTime", type: "enum", description: "", title: "Transition time", options: [[500:"500ms"],[1000:"1s"],[1500:"1.5s"],[2000:"2s"],[5000:"5s"]], defaultValue: 1000
         input name: "colorStaging", type: "bool", description: "", title: "Enable color pre-staging", defaultValue: false
         input name: "hiRezHue", type: "bool", title: "Enable Hue in degrees (0-360)", defaultValue: false
@@ -87,7 +87,7 @@ def eventExpect(String name, value, long expectedDelay, String where = '') {
     Map eventMap = [
         name: name,
         value: value,
-        time: now() + expectedDelay + (gracePeriod ?: 45000),
+        time: now() + expectedDelay + (gracePeriod ?: 5000),
         devid: devid,
     ]
 
@@ -107,7 +107,7 @@ def eventExpect(String name, value, long expectedDelay, String where = '') {
         eventsQueue[devid].add(eventMap)
     }
 
-    runInMillis((expectedDelay + (gracePeriod ?: 45000) as Integer), refireMissedEvents)
+    runInMillis((expectedDelay + (gracePeriod ?: 5000) as Integer), refireMissedEvents)
 }
 
 def eventMark(String name, value) {
