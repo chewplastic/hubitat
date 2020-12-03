@@ -1,16 +1,20 @@
 /*
- 	Generic ZigBee RGBW Light
+    Generic ZigBee RGBW Light
 
     Copyright 2016 -> 2020 Hubitat Inc.  All Rights Reserved
-	2019-12-20 2.1.8 maxwell
-		-add Nue HGZB-18A
-		-add RGBGenie ZB-1025
+
+    2020-12-02 jessej
+        -add auto-retry feature
+
+    2019-12-20 2.1.8 maxwell
+        -add Nue HGZB-18A
+        -add RGBGenie ZB-1025
     2019-11-14 2.1.7 maxwell
         -add GLEDOPTO Mini Zigbee RGB+CCT Controller
         -add Nue HGZB-07A
         -add Innr GU10 Colour bulb
-	2019-09-02 2.1.5 maxwell
-	    -add white as a color
+    2019-09-02 2.1.5 maxwell
+        -add white as a color
         -change bindings to advertised endpoint
     2019-05-28 2.1.1 maxwell
         -fp update
@@ -19,18 +23,18 @@
     2018-12-05 2.0.2 maxwell
         -fp update
     2018-10-12 ravenel
-    	-add rate to setColor
+        -add rate to setColor
     2018-06-04 maxwell
         -updates to support changeLevel
         -add capability color mode
-	2018-04-09 maxwell
-		-add transition and color staging options
+    2018-04-09 maxwell
+        -add transition and color staging options
     2018-03-24 maxwell
         -patch NPE on config log settings
 */
 
 metadata {
-    definition (name: "Generic ZigBee RGBW Light", namespace: "hubitat", author: "Mike Maxwell") {
+    definition (name: "Generic Zigbee RGBW Light Auto-Retry", namespace: "hubitat", author: "Mike Maxwell") {
         capability "Actuator"
         capability "Color Control"
         capability "Color Temperature"
@@ -64,6 +68,7 @@ metadata {
     }
 
     preferences {
+        input name: "gracePeriod", type: "number", description: "How many milliseconds to wait after expected events before retrying them?", title: "Grace Period", defaultValue: 45000, required: true
         input name: "transitionTime", type: "enum", description: "", title: "Transition time", options: [[500:"500ms"],[1000:"1s"],[1500:"1.5s"],[2000:"2s"],[5000:"5s"]], defaultValue: 1000
         input name: "colorStaging", type: "bool", description: "", title: "Enable color pre-staging", defaultValue: false
         input name: "hiRezHue", type: "bool", title: "Enable Hue in degrees (0-360)", defaultValue: false
@@ -72,12 +77,111 @@ metadata {
     }
 }
 
+// Use @Field trick instead of "state" to avoid race conditions with simultaneous events by using synchronized{..}
+import groovy.transform.Field
+@Field static Map eventsQueue = [:]
+
+def eventExpect(String name, value, long expectedDelay, String where = '') {
+    def devid = device.getId()
+
+    Map eventMap = [
+        name: name,
+        value: value,
+        time: now() + expectedDelay + (gracePeriod ?: 45000),
+        devid: devid,
+    ]
+
+    if (logEnable) log.debug "Will expect: ${name} = ${value} ${where}"
+    synchronized (eventsQueue) {
+        if(!eventsQueue.containsKey(devid)) {
+            device.updateSetting("logEnable",[value:"true",type:"bool"])
+            runIn(1800,logsOff)
+            eventsQueue[devid] = []
+        }
+
+        //remove any existing event for the same action
+        eventsQueue[devid].removeAll { item ->
+            return item.name == name
+        }
+
+        eventsQueue[devid].add(eventMap)
+    }
+
+    runInMillis((expectedDelay + (gracePeriod ?: 45000) as Integer), refireMissedEvents)
+}
+
+def eventMark(String name, value) {
+    synchronized (eventsQueue) {
+        if (logEnable) log.warn "Trying mark ${name} = ${value} with size ${eventsQueue[device.getId()].size()}"
+        eventsQueue[device.getId()].removeAll { item ->
+            if(item.name == name
+            && item.value == value) {
+                if (logEnable) log.debug "RCVD expected ${name} = ${value} for ${item.devid}"
+                return true
+            }
+            return false
+        }
+    }
+}
+
+def refireMissedEvents() {
+    long nowTime = now()
+
+    List eventsToFire = []
+
+    synchronized (eventsQueue) {
+        eventsQueue[device.getId()].removeAll { item ->
+            if(item.time <= nowTime) {
+                if (logEnable) log.debug "REFIRE ${item.name}=${item.value}"
+                switch(item.name) {
+                    case 'switch':
+                        if(item.value == 'on') {
+                            eventsToFire << { on() }
+                        } else if (item.value == 'off') {
+                            eventsToFire << { off() }
+                        }
+                        break
+                    case 'level':
+                        eventsToFire << { setLevel(item.value) }
+                        break
+                    case 'hue':
+                        eventsToFire << { setHue(item.value) }
+                        break
+                    case 'saturation':
+                        eventsToFire << { setSaturation(item.value) }
+                        break
+                    case 'colorTemperature':
+                        eventsToFire << { setColorTemperature(item.value) }
+                        break
+                    //case 'colorMode':
+                }
+
+                return true //delete the item
+            }
+            return false //if we reach here, don't delete the item
+        }
+
+        //if there's still more expected events, loop again in 1 second
+        if(eventsQueue[device.getId()].size() > 0) {
+            runInMillis(1000, refireMissedEvents)
+        }
+    }
+
+    //execute the closures
+    eventsToFire.each { evtClosure ->
+        sendHubCommand(new hubitat.device.HubMultiAction(evtClosure(), hubitat.device.Protocol.ZIGBEE))
+    }
+}
+
+
 def logsOff(){
     log.warn "debug logging disabled..."
     device.updateSetting("logEnable",[value:"false",type:"bool"])
 }
 
 def updated(){
+    unschedule()
+    eventsQueue = []
     log.info "updated..."
     log.warn "Hue in degrees is: ${hiRezHue == true}"
     log.warn "debug logging is: ${logEnable == true}"
@@ -153,7 +257,7 @@ def parse(String description) {
                     }
                     state.lastSaturation = descMap.value
                     break
-                case 7:	//ct
+                case 7: //ct
                     value = (1000000 / rawValue).toInteger()
                     name = "colorTemperature"
                     unit = "°K"
@@ -165,9 +269,9 @@ def parse(String description) {
                     state.lastCT = descMap.value
                     break
                 case 8: //cm
-                    if (rawValue == 2) {		//ColorTemperature
+                    if (rawValue == 2) {        //ColorTemperature
                         setGenericTempName(device.currentValue("colorTemperature"))
-                    } else if (rawValue == 0){	//HSV
+                    } else if (rawValue == 0){  //HSV
                         setGenericName(device.currentValue("hue"))
                     }
                     value = rawValue == 2 ? "CT" : "RGB"
@@ -179,6 +283,7 @@ def parse(String description) {
     }
     if (logEnable) log.debug "evt- rawValue:${rawValue}, value: ${value}, descT: ${descriptionText}"
     if (descriptionText){
+        eventMark(name, value)
         if (txtEnable) log.info "${descriptionText}"
         sendEvent(name:name,value:value,descriptionText:descriptionText, unit: unit)
     }
@@ -203,6 +308,7 @@ def on() {
             "delay 1000",
             "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0006 0 {}"
     ]
+    eventExpect('switch', 'on', 1000, 'on') //6 0
     return cmd
 }
 
@@ -212,6 +318,7 @@ def off() {
             "delay 1000",
             "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0006 0 {}"
     ]
+    eventExpect('switch', 'off', 1000, 'off') //6 0
     return cmd
 }
 
@@ -222,8 +329,8 @@ def refresh() {
             "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0008 0 {}","delay 200",  //light level
             "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0000 {}","delay 200", //hue
             "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0001 {}","delay 200", //sat
-            "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0007 {}","delay 200",	//color temp
-            "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"  		//color mode
+            "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0007 {}","delay 200", //color temp
+            "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"          //color mode
     ]
 
 }
@@ -315,6 +422,7 @@ def setLevel(value,rate) {
     def scaledRate = (rate * 10).toInteger()
     def cmd = []
     def isOn = device.currentValue("switch") == "on"
+    def originalValue = value
     value = (value.toInteger() * 2.55).toInteger()
     if (isOn){
         cmd = [
@@ -322,12 +430,15 @@ def setLevel(value,rate) {
                 "delay ${(rate * 1000) + 400}",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0008 0 {}"
         ]
+        eventExpect('level', originalValue, ((rate * 1000) + 400) as long, 'setLevelOn')
     } else {
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0008 4 {0x${intTo8bitUnsignedHex(value)} 0x0100}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0006 0 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0008 0 {}"
         ]
+        eventExpect('switch', 'on', 200, 'setLevelOff')
+        eventExpect('level', originalValue, 400, 'setLevelOff') //8 0
     }
     return cmd
 }
@@ -362,6 +473,10 @@ def setColor(value){
                     "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0008 0 {}", "delay 200",
                     "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
             ]
+            eventExpect('hue', value.hue, rate + 400, 'setColorOnLevel') //300 0
+            eventExpect('saturation', value.saturation, rate + 400 + 200, 'setColorOnLevel') //300 1
+            eventExpect('level', value.level, rate + 400 + 200 + 200, 'setColorOnLevel') //8 0
+            //FIXME: ignore colorMode? //300 8
         } else {
             cmd = [
                     "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x06 {${hexHue} ${hexSat} ${intTo16bitUnsignedHex(rate / 100)}}",
@@ -370,6 +485,9 @@ def setColor(value){
                     "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0001 {}", "delay 200",
                     "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
             ]
+            eventExpect('hue', value.hue, rate + 400, 'setColorOnNoLevel') //300 0
+            eventExpect('saturation', value.saturation, rate + 400 + 200, 'setColorOnNoLevel') //300 1
+            //FIXME: ignore colorMode? //300 8
         }
     } else if (colorStaging){
         cmd = [
@@ -388,6 +506,11 @@ def setColor(value){
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0001 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('switch', 'on', 400, 'setColorOffLevel') //6 0
+        eventExpect('level', value.level, 400 + 200, 'setColorOffLevel') //8 0
+        eventExpect('hue', value.hue, 400 + 200 + 200, 'setColorOffLevel') //300 0
+        eventExpect('saturation', value.saturation, 400 + 200 + 200, 'setColorOffLevel') //300 1
+        //FIXME: ignore colorMode? //300 8
     } else {
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x06 {${hexHue} ${hexSat} 0x0100}", "delay 200",
@@ -397,6 +520,10 @@ def setColor(value){
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0001 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('switch', 'on', 400, 'setColorOff') //6 0
+        eventExpect('hue', value.hue, 400 + 200, 'setColorOff') //300 0
+        eventExpect('saturation', value.saturation, 400 + 200 + 200, 'setColorOff') //300 1
+        //FIXME: ignore colorMode? //300 8
     }
     state.lastSaturation = hexSat
     state.lastHue = hexHue
@@ -422,12 +549,17 @@ def setHue(value) {
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0000 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('hue', value, rate + 400, 'setHueOn') //300 0
+        //FIXME: ignore colorMode? //300 8
+
     } else if (colorStaging){
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x06 {${hexHue} ${hexSat} 0x0100}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0000 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('hue', value, 200, 'setHueStaging') //300 0
+        //FIXME: ignore colorMode? //300 8
     } else {
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x06 {${hexHue} ${hexSat} 0x0100}", "delay 200",
@@ -436,6 +568,9 @@ def setHue(value) {
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0000 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('switch', 'on', 400, 'setColorOff') //6 0
+        eventExpect('hue', value, rate + 400, 'setHueOn') //300 0
+        //FIXME: ignore colorMode? //300 8
     }
     state.lastHue = hexHue
     return cmd
@@ -455,12 +590,16 @@ def setSaturation(value) {
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0001 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('saturation', value, rate + 400, 'setSaturationOn') //300 1
+        //FIXME: ignore colorMode? //300 8
     } else if (colorStaging){
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x06 {${hexHue} ${hexSat} 0x0100}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0001 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('saturation', value, 200, 'setSaturationStaging') //300 1
+        //FIXME: ignore colorMode? //300 8
     } else {
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x06 {${hexHue} ${hexSat} 0x0100}", "delay 200",
@@ -469,6 +608,9 @@ def setSaturation(value) {
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0001 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('switch', 'on', 400, 'setSaturationOff') //6 0
+        eventExpect('saturation', value, 400 + 200, 'setSaturationOff') //300 1
+        //FIXME: ignore colorMode? //300 8
     }
     state.lastSaturation = hexSat
     return cmd
@@ -487,12 +629,16 @@ def setColorTemperature(rawValue) {
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0007 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('colorTemperature', rawValue, rate + 400, 'setColorTemperatureOn') //300 7
+        //FIXME: ignore colorMode? //300 8
     } else if (colorStaging){
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x000A {${value} 0x0100}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0007 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('colorTemperature', rawValue, rate + 400, 'setColorTemperatureStaging') //300 7
+        //FIXME: ignore colorMode? //300 8
     } else {
         cmd = [
                 "he cmd 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x000A {${value} 0x0100}", "delay 200",
@@ -501,6 +647,9 @@ def setColorTemperature(rawValue) {
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0007 {}", "delay 200",
                 "he rattr 0x${device.deviceNetworkId} 0x${device.endpointId} 0x0300 0x0008 {}"
         ]
+        eventExpect('switch', 'on', 400, 'setColorTemperatureOff') //6 0
+        eventExpect('colorTemperature', rawValue, 400 + 200, 'setColorTemperatureOff') //300 7
+        //FIXME: ignore colorMode? //300 8
     }
     state.lastCT = value
     return cmd
