@@ -181,7 +181,7 @@ def logsOff(){
 
 def updated(){
     unschedule()
-    eventsQueue = []
+    eventsQueue = [:]
     log.info "updated..."
     log.warn "Hue in degrees is: ${hiRezHue == true}"
     log.warn "debug logging is: ${logEnable == true}"
