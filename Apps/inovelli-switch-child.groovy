@@ -276,18 +276,23 @@ def switchIndicator(String action) {
 }
 
 def switchPress(String action) {
-    def onSwitches = evaluate("${action}")
-    def offSwitches = evaluate("${action + "off"}")
+    try {
+        switchIndicator(action)
+    } catch (e) {}
 
-    switchIndicator(action)
+    try {
+        def offSwitches = evaluate("${action + "off"}")
+        if(offSwitches) {
+            offSwitches.off()
+        }
+    } catch (e) {}
 
-    if(offSwitches) {
-        offSwitches.off()
-    }
-
-    if(onSwitches) {
-        onSwitches.on()
-    }
+    try {
+        def onSwitches = evaluate("${action}")
+        if(onSwitches) {
+            onSwitches.on()
+        }
+    } catch (e) {}
 }
 
 /**
@@ -350,7 +355,14 @@ def switchHandler(evt) {
 
         case 'held':
             switch(evt.value) {
-                case "1": switchPress("pressDownX1"); break
+                case "1": switchPress("pressDownX1");
+                    //also turn off the lights, in case lightsLed is off, but not all the bulbs are off
+                    lights.each {
+                        eventExpect("lights", "switch", "off")
+                        it.off()
+                    }
+                    break
+
                 case "2": switchPress("pressDownX2"); break
                 case "3": switchPress("pressDownX3"); break
                 case "4": switchPress("pressDownX4"); break
