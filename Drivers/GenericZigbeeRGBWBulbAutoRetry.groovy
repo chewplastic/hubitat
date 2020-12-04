@@ -2,7 +2,9 @@
     Generic ZigBee RGBW Light
 
     Copyright 2016 -> 2020 Hubitat Inc.  All Rights Reserved
-
+    
+    2020-12-04 jessej
+         -improve event queueing race condition behavior
     2020-12-02 jessej
         -add auto-retry feature
 
@@ -99,9 +101,36 @@ def eventExpect(String name, value, long expectedDelay, String where = '') {
             eventsQueue[devid] = []
         }
 
-        //remove any existing event for the same action
+        //remove any existing event for the same action, or those of opposing actions so
+        //that they don't later clobber the action we are taking now
         eventsQueue[devid].removeAll { item ->
-            return item.name == name
+            switch(name) {
+                case 'switch':
+                    if(value == 'off') {
+                        //remove all other events if turning off
+                        return true
+                    } else { //on
+                        return item.name == name
+                    }
+                    break
+
+                case 'level':
+                    //remove "off" events as well as our own
+                    return (item.name == 'switch' && item.value == 'off') || item.name == name
+                    break
+
+                case 'hue':
+                case 'saturation':
+                    return item.name == 'colorTemperature' || item.name == name
+                    break
+
+                case 'colorTemperature':
+                    return item.name == 'hue' || item.name == 'saturation' || item.name == name
+                    break
+
+                default:
+                    return item.name == name
+            }
         }
 
         eventsQueue[devid].add(eventMap)
@@ -132,7 +161,7 @@ def refireMissedEvents() {
     synchronized (eventsQueue) {
         eventsQueue[device.getId()].removeAll { item ->
             if(item.time <= nowTime) {
-                if (logEnable) log.debug "REFIRE ${item.name}=${item.value}"
+                if (logEnable) log.debug "REFIRE ${item.name}=${item.value} on ${device.getName()}"
                 switch(item.name) {
                     case 'switch':
                         if(item.value == 'on') {

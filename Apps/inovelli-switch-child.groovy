@@ -159,7 +159,7 @@ def bulbSubscribe() {
 
 def eventCheckDup(String device, evt) {
     long nowTime = now()
-    long timeoutMs = 10000
+    long timeoutMs = 25000
     Map found = [:]
 
     synchronized (eventsIgnore) {
@@ -220,13 +220,13 @@ def lightHandler(evt) {
         return
     }
 
-    /**
-     * This works around an apparent hubitat bug where the current "level" state of
-     * the lightsLed sending events here doesn't always update to the correct value
-     * until refresh() is called on the light.  Calling this will update the state
-     * and trigger another event.
-     */
-    runIn(5, 'lightsLedRefresh')
+//    /**
+//     * This works around an apparent hubitat bug where the current "level" state of
+//     * the lightsLed sending events here doesn't always update to the correct value
+//     * until refresh() is called on the light.  Calling this will update the state
+//     * and trigger another event.
+//     */
+//    runIn(5, 'lightsLedRefresh')
 
     switch(evt.name) {
         case "switch":
@@ -275,6 +275,21 @@ def switchIndicator(String action) {
     }
 }
 
+def switchPress(String action) {
+    def onSwitches = evaluate("${action}")
+    def offSwitches = evaluate("${action + "off"}")
+
+    switchIndicator(action)
+
+    if(offSwitches) {
+        offSwitches.off()
+    }
+
+    if(onSwitches) {
+        onSwitches.on()
+    }
+}
+
 /**
  * Process events from the switch to sync myswitch -> lights
  */
@@ -284,13 +299,13 @@ def switchHandler(evt) {
         return
     }
 
-    /**
-     * This works around an apparent hubitat bug where the current "level" state of
-     * the lightsLed sending events here doesn't always update to the correct value
-     * until refresh() is called on the light.  Calling this will update the state
-     * and trigger another event.
-     */
-    runIn(5, 'lightsLedRefresh')
+//    /**
+//     * This works around an apparent hubitat bug where the current "level" state of
+//     * the lightsLed sending events here doesn't always update to the correct value
+//     * until refresh() is called on the light.  Calling this will update the state
+//     * and trigger another event.
+//     */
+//    runIn(5, 'lightsLedRefresh')
 
     switch(evt.name) {
         case 'switch':
@@ -314,13 +329,13 @@ def switchHandler(evt) {
 
         case 'pushed':
             switch(evt.value) {
-                case "1": switchIndicator("pressUpX1"); pressUpX1off?.off(); pressUpX1?.on(); break
-                case "2": switchIndicator("pressUpX2"); pressUpX2off?.off(); pressUpX2?.on(); break
-                case "3": switchIndicator("pressUpX3"); pressUpX3off?.off(); pressUpX3?.on(); break
-                case "4": switchIndicator("pressUpX4"); pressUpX4off?.off(); pressUpX4?.on(); break
-                case "5": switchIndicator("pressUpX5"); pressUpX5off?.off(); pressUpX5?.on(); break
-                case "6": switchIndicator("holdUp"); holdUpoff?.off(); holdUp?.on(); break
-                case "7": switchIndicator("pressConfig"); pressConfigoff?.off(); pressConfig?.on(); break
+                case "1": switchPress("pressUpX1"); break
+                case "2": switchPress("pressUpX2"); break
+                case "3": switchPress("pressUpX3"); break
+                case "4": switchPress("pressUpX4"); break
+                case "5": switchPress("pressUpX5"); break
+                case "6": switchPress("holdUp"); break
+                case "7": switchPress("pressConfig"); break
                 default:
                     logDebug("WARNING: Got unexpected '${evt.name}=${evt.value}', ignoring")
                     break
@@ -329,12 +344,12 @@ def switchHandler(evt) {
 
         case 'held':
             switch(evt.value) {
-                case "1": switchIndicator("pressDownX1"); pressDownX1off?.off(); pressDownX1?.on(); break
-                case "2": switchIndicator("pressDownX2"); pressDownX2off?.off(); pressDownX2?.on(); break
-                case "3": switchIndicator("pressDownX3"); pressDownX3off?.off(); pressDownX3?.on(); break
-                case "4": switchIndicator("pressDownX4"); pressDownX4off?.off(); pressDownX4?.on(); break
-                case "5": switchIndicator("pressDownX5"); pressDownX5off?.off(); pressDownX5?.on(); break
-                case "6": switchIndicator("holdDown"); holdDownoff?.off(); holdDown?.on(); break
+                case "1": switchPress("pressDownX1"); break
+                case "2": switchPress("pressDownX2"); break
+                case "3": switchPress("pressDownX3"); break
+                case "4": switchPress("pressDownX4"); break
+                case "5": switchPress("pressDownX5"); break
+                case "6": switchPress("holdDown"); break
                 default:
                     logDebug("WARNING: Got unexpected '${evt.name}=${evt.value}', ignoring")
                     break
