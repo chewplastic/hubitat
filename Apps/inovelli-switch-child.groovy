@@ -149,8 +149,8 @@ def switchSubscribe() {
 }
 
 def bulbSubscribe() {
-    //Map options = [filterEvents: false]
-    Map options = [:]
+    Map options = [filterEvents: false]
+    //Map options = [:]
     subscribe(lightsLed, "switch", lightHandler, options)
     subscribe(lightsLed, "level", lightHandler, options)
     subscribe(lightsLed, "colorMode", lightHandler, options)
@@ -311,20 +311,26 @@ def switchHandler(evt) {
         case 'switch':
             switch(evt.value) {
                 case "on":
-                    eventExpect("lights", "switch", "on")
-                    lights.on()
+                    lights.each {
+                        eventExpect("lights", "switch", "on")
+                        it.on()
+                    }
                     break
 
                 case "off":
-                    eventExpect("lights", "switch", "off")
-                    lights.off()
+                    lights.each {
+                        eventExpect("lights", "switch", "off")
+                        it.off()
+                    }
                     break
             }
             break
 
         case 'level':
-            eventExpect("lights", "level", evt.value)
-            lights.setLevel(evt.value.toInteger(), 1)
+            lights.each {
+                eventExpect("lights", "level", evt.value)
+                it.setLevel(evt.value.toInteger(), 1)
+            }
             break
 
         case 'pushed':
